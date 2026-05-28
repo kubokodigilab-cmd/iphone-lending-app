@@ -177,6 +177,8 @@
   };
   window.closeModal = function() {
     document.getElementById("modal").style.display = "none";
+    document.getElementById("modal-confirm").textContent = "返却する";
+    document.getElementById("modal-confirm").onclick = doReturn;
     returnTarget = null;
   };
   window.doReturn = async function() {
@@ -205,6 +207,27 @@
     }
     document.getElementById("modal-confirm").disabled = false;
   };
+
+  // ---- reset history ----
+  window.confirmReset = function() {
+    document.getElementById("modal-title").textContent = "貸出記録をリセットしますか？";
+    document.getElementById("modal-body").textContent  = "全ての貸出履歴が削除されます。この操作は取り消せません。";
+    document.getElementById("modal-confirm").textContent = "リセットする";
+    document.getElementById("modal-confirm").onclick = doReset;
+    document.getElementById("modal").style.display = "flex";
+  };
+  async function doReset() {
+    document.getElementById("modal-confirm").disabled = true;
+    try {
+      await set(ref(db, "history"), null);
+      closeModal();
+      showToast("貸出記録をリセットしました");
+    } catch(e) {
+      showToast("エラー: " + e.message);
+    }
+    document.getElementById("modal-confirm").textContent = "返却する";
+    document.getElementById("modal-confirm").disabled = false;
+  }
 
   // ---- admin screen ----
   function renderAdmin() {
@@ -537,7 +560,10 @@ body {
     </div>
     <div class="content">
       <div class="stats-row" id="admin-stats"></div>
-      <div class="section-title">全貸出履歴</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div class="section-title" style="margin-bottom:0">全貸出履歴</div>
+        <button onclick="window.confirmReset()" style="font-size:12px;color:#FF3B30;background:none;border:0.5px solid rgba(255,59,48,.3);border-radius:8px;padding:5px 12px;cursor:pointer">履歴をリセット</button>
+      </div>
       <div id="admin-log">
         <div class="empty-state"><span class="icon">⏳</span>読み込み中…</div>
       </div>
