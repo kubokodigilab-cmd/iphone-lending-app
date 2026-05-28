@@ -60,6 +60,8 @@
     document.querySelectorAll(".nav button").forEach(b => b.classList.remove("on"));
     document.querySelector(`.nav button[data-screen="${id}"]`).classList.add("on");
     currentScreen = id;
+    if (id === "home")  { renderHome(); renderLendForm(); }
+    if (id === "lend")  renderLendForm();
     if (id === "admin") renderAdmin();
   }
   window.showScreen = showScreen;
@@ -70,8 +72,8 @@
 
   onValue(ref(db, "loans"), snap => {
     loansData = snap.val() || {};
-    if (currentScreen === "home")  renderHome();
-    if (currentScreen === "lend")  renderLendForm();
+    renderHome();
+    renderLendForm();
     if (currentScreen === "admin") renderAdmin();
   });
 
