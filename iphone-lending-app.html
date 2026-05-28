@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>iPhone 貸出管理</title>
+
+<!-- ======================================================
+     ★ Firebase設定 — ここを自分のプロジェクトの値に書き換える
+     Firebase Console → プロジェクトの設定 → マイアプリ → firebaseConfig
+     ====================================================== -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getDatabase, ref, set, get, update, onValue, push, serverTimestamp }
+    from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+  const firebaseConfig = {
+    apiKey:            "AIzaSyC4Wr1OWWWM0uIvrXOjCTvoLFdm93ERyrY",
+    authDomain:        "school-iphone-lend.firebaseapp.com",
+    databaseURL:       "https://school-iphone-lend-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId:         "school-iphone-lend",
+    storageBucket:     "school-iphone-lend.firebasestorage.app",
+    messagingSenderId: "640258231628",
+    appId:             "1:640258231628:web:0a7e64a71aa228a03713e9"
+  };
+  // ======================================================
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getDatabase(app);
+
+  const DEVICES = [1, 2, 3, 4, 5];
+
+  // ---- util ----
+  function fmtDate(ts) {
+    if (!ts) return "";
+    const d = new Date(ts);
+    return d.getFullYear() + "/" +
+      String(d.getMonth()+1).padStart(2,"0") + "/" +
+      String(d.getDate()).padStart(2,"0") + " " +
+      String(d.getHours()).padStart(2,"0") + ":" +
+      String(d.getMinutes()).padStart(2,"0");
+  }
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;")
+      .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+  function showToast(msg) {
+    const t = document.getElementById("toast");
+    t.textContent = msg;
+    t.classList.add("show");
+    setTimeout(() => t.classList.remove("show"), 2400);
+  }
+
+  // ---- screen ----
+  let currentScreen = "home";
+  function showScreen(id) {
+    document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+    document.getElementById("screen-" + id).classList.add("active");
+    document.querySelectorAll(".nav button").forEach(b => b.classList.remove("on"));
+    document.querySelector(`.nav button[data-screen="${id}"]`).classList.add("on");
+    currentScreen = id;
+    if (id === "admin") renderAdmin();
+  }
+  window.showScreen = showScreen;
+
+  // ---- realtime listener ----
+  let loansData   = {};
+  let historyData = {};
+
+  onValue(ref(db, "loans"), snap => {
+    loansData = snap.val() || {};
+    if (currentScreen === "home")  renderHome();
+    if (currentScreen === "lend")  renderLendForm();
+    if (currentScreen === "admin") renderAdmin();
+  });
+
+  onValue(ref(db, "history"), snap => {
+    historyData = snap.val() || {};
+    if (currentScreen === "admin") renderAdmin();
+  });
+
+  // ---- home screen ----
+  function renderHome() {
+    const c = document.getElementById("home-content");
+    const lent = DEVICES.filter(n => loansData[n]);
+    const free = DEVICES.filter(n => !loansData[n]);
+
+    let html = `<div class="section-title">未返却 — ${lent.length}台</div>`;
+    if (lent.length === 0) {
+      html += `<div class="empty-state">
+        <i class="icon">📱</i>
+        <p>現在貸出中の端末はありません</p>
+      </div>`;
+    } else {
+      lent.forEach(n => {
+        const loan = loansData[n];
+        html += `<div class="device-card">
+          <div class="device-num lent">No${n}</div>
+          <div class="device-info">
+            <div class="device-name">${esc(loan.name)}</div>
+            <div class="device-time">${fmtDate(loan.start)} 〜</div>
+          </div>
+          <button class="return-btn" onclick="window.confirmReturn(${n})">↩ 返却</button>
+        </div>`;
+      });
+    }
+
+    html += `<div class="section-title" style="margin-top:16px">空き端末 — ${free.length}台</div>`;
+    if (free.length === 0) {
+      html += `<p class="muted-note">全端末が貸出中です</p>`;
+    } else {
+      free.forEach(n => {
+        html += `<div class="device-card">
+          <div class="device-num free">No${n}</div>
+          <div class="device-info">
+            <span class="badge free-badge">利用可</span>
+          </div>
+        </div>`;
+      });
+    }
+    c.innerHTML = html;
+  }
+
+  // ---- lend screen ----
+  function renderLendForm() {
+    const sel = document.getElementById("lend-device");
+    const free = DEVICES.filter(n => !loansData[n]);
+    sel.innerHTML = `<option value="">— 選択してください —</option>`;
+    free.forEach(n => {
+      const o = document.createElement("option");
+      o.value = n;
+      o.textContent = "No" + n;
+      sel.appendChild(o);
+    });
+  }
+
+  window.submitLend = async function() {
+    const dev  = document.getElementById("lend-device").value;
+    const name = document.getElementById("lend-name").value.trim();
+    if (!dev)  { showToast("端末番号を選んでください"); return; }
+    if (!name) { showToast("名前を入力してください"); return; }
+    if (loansData[dev]) { showToast("この端末はすでに貸出中です"); return; }
+
+    const btn = document.getElementById("lend-submit");
+    btn.disabled = true;
+    btn.textContent = "処理中…";
+
+    try {
+      const ts = Date.now();
+      // loans に追加
+      await set(ref(db, `loans/${dev}`), { name, start: ts });
+      // history に追加
+      const histRef = push(ref(db, "history"));
+      await set(histRef, { device: dev, name, start: ts, end: null, key: histRef.key });
+
+      document.getElementById("lend-name").value = "";
+      showToast(`No${dev} を ${name} さんに貸出しました`);
+      showScreen("home");
+    } catch(e) {
+      showToast("エラーが発生しました: " + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = "借りる";
+  };
+
+  // ---- return ----
+  let returnTarget = null;
+  window.confirmReturn = function(n) {
+    returnTarget = n;
+    const loan = loansData[n];
+    document.getElementById("modal-title").textContent = `No${n} を返却しますか？`;
+    document.getElementById("modal-body").textContent  = `${loan.name} さんが借りています。返却処理を行います。`;
+    document.getElementById("modal").style.display = "flex";
+  };
+  window.closeModal = function() {
+    document.getElementById("modal").style.display = "none";
+    returnTarget = null;
+  };
+  window.doReturn = async function() {
+    if (returnTarget === null) return;
+    const n    = returnTarget;
+    const loan = loansData[n];
+    const ts   = Date.now();
+
+    document.getElementById("modal-confirm").disabled = true;
+    try {
+      // historyのendを更新
+      const histSnap = await get(ref(db, "history"));
+      if (histSnap.exists()) {
+        const all = histSnap.val();
+        const key = Object.keys(all).find(k => String(all[k].device) === String(n) && all[k].end === null);
+        if (key) await update(ref(db, `history/${key}`), { end: ts });
+      }
+      // loansから削除
+      await set(ref(db, `loans/${n}`), null);
+
+      const uname = loan.name;
+      closeModal();
+      showToast(`No${n} が返却されました（${uname} さん）`);
+    } catch(e) {
+      showToast("エラー: " + e.message);
+    }
+    document.getElementById("modal-confirm").disabled = false;
+  };
+
+  // ---- admin screen ----
+  function renderAdmin() {
+    const lentCount = Object.keys(loansData).length;
+    const hist = Object.values(historyData).sort((a,b) => b.start - a.start);
+    const total = hist.length;
+
+    document.getElementById("admin-stats").innerHTML = `
+      <div class="stat-card">
+        <div class="stat-label">貸出中</div>
+        <div class="stat-val">${lentCount}<span class="stat-unit"> 台</span></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">累計貸出数</div>
+        <div class="stat-val">${total}<span class="stat-unit"> 件</span></div>
+      </div>`;
+
+    const log = document.getElementById("admin-log");
+    if (hist.length === 0) {
+      log.innerHTML = `<div class="empty-state"><p>貸出記録はありません</p></div>`;
+      return;
+    }
+    log.innerHTML = hist.map(h => {
+      const badge = h.end
+        ? `<span class="badge free-badge">返却済</span>`
+        : `<span class="badge lent-badge">未返却</span>`;
+      const endTxt = h.end ? `返却: ${fmtDate(h.end)}` : "未返却";
+      return `<div class="log-item">
+        <div class="log-header"><span class="log-device">No${h.device}</span>${badge}</div>
+        <div class="log-user">👤 ${esc(h.name)}</div>
+        <div class="log-time">貸出: ${fmtDate(h.start)}　${endTxt}</div>
+      </div>`;
+    }).join("");
+  }
+
+  // initial render after DOM ready
+  document.addEventListener("DOMContentLoaded", () => {
+    renderHome();
+    renderLendForm();
+    document.getElementById("lend-submit").addEventListener("click", window.submitLend);
+  });
+</script>
+
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  background: #F2F2F7;
+  color: #1C1C1E;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+}
+
+/* ---- app shell ---- */
+#app {
+  width: 100%;
+  max-width: 430px;
+  background: #F2F2F7;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.screen { display: none; flex: 1; flex-direction: column; }
+.screen.active { display: flex; }
+
+/* ---- top bar ---- */
+.topbar {
+  background: #fff;
+  padding: 52px 18px 14px;
+  border-bottom: 0.5px solid rgba(60,60,67,.2);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.topbar-sub { font-size: 11px; color: #8E8E93; margin-bottom: 2px; }
+.topbar h1  { font-size: 18px; font-weight: 600; color: #1C1C1E; }
+
+/* ---- nav ---- */
+.nav {
+  display: flex;
+  background: rgba(255,255,255,.92);
+  backdrop-filter: blur(12px);
+  border-top: 0.5px solid rgba(60,60,67,.2);
+  padding: 6px 0 calc(6px + env(safe-area-inset-bottom));
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+}
+.nav button {
+  flex: 1;
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 6px 4px;
+  font-size: 10px;
+  color: #8E8E93;
+  transition: color .15s;
+}
+.nav button .nav-icon { font-size: 24px; line-height: 1; }
+.nav button.on { color: #007AFF; }
+
+/* ---- content ---- */
+.content { flex: 1; padding: 14px 16px; overflow-y: auto; }
+
+/* ---- device cards ---- */
+.device-card {
+  background: #fff;
+  border-radius: 13px;
+  padding: 13px 14px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.06);
+}
+.device-num {
+  width: 42px; height: 42px;
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 600;
+  flex-shrink: 0;
+}
+.device-num.lent { background: #FFF3E0; color: #E65100; }
+.device-num.free { background: #E8F5E9; color: #2E7D32; }
+.device-info { flex: 1; min-width: 0; }
+.device-name { font-size: 15px; font-weight: 500; color: #1C1C1E; }
+.device-time { font-size: 12px; color: #8E8E93; margin-top: 2px; }
+
+.return-btn {
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  background: #F2F2F7;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: #1C1C1E;
+  transition: background .15s;
+}
+.return-btn:hover   { background: #E5E5EA; }
+.return-btn:active  { background: #D1D1D6; }
+
+.badge { font-size: 12px; padding: 3px 10px; border-radius: 6px; font-weight: 500; }
+.free-badge { background: #E8F5E9; color: #2E7D32; }
+.lent-badge { background: #FFF3E0; color: #E65100; }
+
+.section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #8E8E93;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: 8px;
+  padding-left: 4px;
+}
+.muted-note { font-size: 13px; color: #8E8E93; padding: 4px; }
+.empty-state { text-align: center; padding: 36px 0; color: #8E8E93; font-size: 14px; }
+.empty-state .icon { font-size: 40px; display: block; margin-bottom: 8px; opacity: .5; }
+
+/* ---- form ---- */
+.form-group { margin-bottom: 16px; }
+.form-label { font-size: 13px; color: #8E8E93; margin-bottom: 6px; display: block; padding-left: 4px; }
+.form-select, .form-input {
+  width: 100%;
+  padding: 13px 14px;
+  font-size: 16px;
+  border: none;
+  border-radius: 12px;
+  background: #fff;
+  color: #1C1C1E;
+  appearance: none;
+  box-shadow: 0 1px 3px rgba(0,0,0,.06);
+}
+.form-select:focus, .form-input:focus {
+  outline: 2px solid #007AFF;
+  outline-offset: -1px;
+}
+#lend-submit {
+  width: 100%;
+  padding: 15px;
+  font-size: 16px;
+  font-weight: 600;
+  background: #007AFF;
+  color: #fff;
+  border: none;
+  border-radius: 14px;
+  cursor: pointer;
+  margin-top: 8px;
+  transition: background .15s, transform .1s;
+}
+#lend-submit:hover   { background: #0066DD; }
+#lend-submit:active  { transform: scale(.98); }
+#lend-submit:disabled { background: #C7C7CC; cursor: default; }
+
+/* ---- admin ---- */
+.stats-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+.stat-card { background: #fff; border-radius: 13px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.stat-label { font-size: 12px; color: #8E8E93; margin-bottom: 4px; }
+.stat-val   { font-size: 26px; font-weight: 600; color: #1C1C1E; }
+.stat-unit  { font-size: 14px; font-weight: 400; }
+
+.log-item { padding: 12px 0; border-bottom: 0.5px solid rgba(60,60,67,.15); }
+.log-item:last-child { border-bottom: none; }
+.log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.log-device { font-size: 14px; font-weight: 600; color: #1C1C1E; }
+.log-user   { font-size: 14px; color: #3C3C43; margin-bottom: 2px; }
+.log-time   { font-size: 12px; color: #8E8E93; }
+
+/* ---- modal ---- */
+#modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.45);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.modal-box {
+  background: #fff;
+  border-radius: 16px;
+  padding: 22px 20px 16px;
+  width: 100%;
+  max-width: 320px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.18);
+}
+.modal-box h2 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+.modal-box p  { font-size: 14px; color: #3C3C43; margin-bottom: 18px; line-height: 1.5; }
+.modal-btns { display: flex; gap: 10px; }
+.modal-btns button { flex: 1; padding: 12px; border-radius: 12px; font-size: 15px; font-weight: 500; cursor: pointer; border: none; transition: background .15s; }
+#modal-cancel  { background: #F2F2F7; color: #1C1C1E; }
+#modal-confirm { background: #FF3B30; color: #fff; }
+#modal-confirm:disabled { background: #C7C7CC; }
+
+/* ---- toast ---- */
+#toast {
+  position: fixed;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(44,44,46,.92);
+  color: #F2F2F7;
+  font-size: 13px;
+  padding: 10px 20px;
+  border-radius: 20px;
+  white-space: nowrap;
+  z-index: 200;
+  opacity: 0;
+  transition: opacity .3s;
+  pointer-events: none;
+  max-width: 90vw;
+  text-align: center;
+}
+#toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ===== ホーム ===== -->
+  <div id="screen-home" class="screen active">
+    <div class="topbar">
+      <div class="topbar-sub">学校 iPhone 管理</div>
+      <h1>貸出状況</h1>
+    </div>
+    <div class="content" id="home-content">
+      <div class="empty-state"><span class="icon">⏳</span>読み込み中…</div>
+    </div>
+    <nav class="nav">
+      <button class="on" data-screen="home" onclick="showScreen('home')">
+        <span class="nav-icon">🏠</span>ホーム
+      </button>
+      <button data-screen="lend" onclick="showScreen('lend')">
+        <span class="nav-icon">➕</span>借りる
+      </button>
+      <button data-screen="admin" onclick="showScreen('admin')">
+        <span class="nav-icon">📋</span>管理
+      </button>
+    </nav>
+  </div>
+
+  <!-- ===== 借りる ===== -->
+  <div id="screen-lend" class="screen">
+    <div class="topbar">
+      <div class="topbar-sub">新規貸出</div>
+      <h1>端末を借りる</h1>
+    </div>
+    <div class="content">
+      <div class="form-group">
+        <label class="form-label">端末番号を選ぶ</label>
+        <select class="form-select" id="lend-device">
+          <option value="">— 選択してください —</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">借りる人の名前</label>
+        <input class="form-input" id="lend-name" type="text"
+               placeholder="例）山田 太郎" maxlength="30" autocomplete="off"/>
+      </div>
+      <button id="lend-submit">借りる</button>
+    </div>
+    <nav class="nav">
+      <button data-screen="home" onclick="showScreen('home')">
+        <span class="nav-icon">🏠</span>ホーム
+      </button>
+      <button class="on" data-screen="lend" onclick="showScreen('lend')">
+        <span class="nav-icon">➕</span>借りる
+      </button>
+      <button data-screen="admin" onclick="showScreen('admin')">
+        <span class="nav-icon">📋</span>管理
+      </button>
+    </nav>
+  </div>
+
+  <!-- ===== 管理 ===== -->
+  <div id="screen-admin" class="screen">
+    <div class="topbar">
+      <div class="topbar-sub">管理者画面</div>
+      <h1>貸出記録</h1>
+    </div>
+    <div class="content">
+      <div class="stats-row" id="admin-stats"></div>
+      <div class="section-title">全貸出履歴</div>
+      <div id="admin-log">
+        <div class="empty-state"><span class="icon">⏳</span>読み込み中…</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <button data-screen="home" onclick="showScreen('home')">
+        <span class="nav-icon">🏠</span>ホーム
+      </button>
+      <button data-screen="lend" onclick="showScreen('lend')">
+        <span class="nav-icon">➕</span>借りる
+      </button>
+      <button class="on" data-screen="admin" onclick="showScreen('admin')">
+        <span class="nav-icon">📋</span>管理
+      </button>
+    </nav>
+  </div>
+
+  <!-- ===== 返却確認モーダル ===== -->
+  <div id="modal">
+    <div class="modal-box">
+      <h2 id="modal-title"></h2>
+      <p  id="modal-body"></p>
+      <div class="modal-btns">
+        <button id="modal-cancel"  onclick="closeModal()">キャンセル</button>
+        <button id="modal-confirm" onclick="doReturn()">返却する</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+</div>
+</body>
+</html>
