@@ -193,7 +193,7 @@
       const histSnap = await get(ref(db, "history"));
       if (histSnap.exists()) {
         const all = histSnap.val();
-        const key = Object.keys(all).find(k => String(all[k].device) === String(n) && all[k].end === null);
+        const key = Object.keys(all).find(k => String(all[k].device) === String(n) && !all[k].end);
         if (key) await update(ref(db, `history/${key}`), { end: ts });
       }
       // loansから削除
